@@ -1,0 +1,167 @@
+# Simulation parameters like timestep, output frequency, and run time.
+
+variable        dt                      equal   5e-7
+#variable        dt                      equal   5e-7
+variable        second                  equal   1.0/${dt}
+#variable        run_time                equal   5.0
+variable        current_time            equal   step*dt
+
+variable        thermo_timesteps        equal   ${second}*1e-3
+#variable        thermo_timesteps        equal   1
+variable        dump_timesteps          equal   ${second}*1e-3
+variable        restart_timesteps       equal   ${second}*1e-1
+#variable        run_timesteps           equal   ${second}*${run_time}
+#variable        restart_timesteps       equal   ${run_timesteps}
+
+variable        input_file_data         string  /scratch365/cgonza13/init_cond/data.test
+variable        input_file_restart      string  /scratch365/cgonza13/liggghts_output/restarts/restart.test.*
+variable        output_file_dumps       string  /scratch365/cgonza13/liggghts_output/dumps/dump.test.*.bin
+variable        output_file_restarts    string  /scratch365/cgonza13/liggghts_output/restarts/restart.test.*
+
+# Material properties and parameters for the collision model (Young's modulus,
+# Poisson's ratio, restitution and friction coefficient).
+
+variable        E                       equal   50e4
+variable        nu                      equal   0.45
+variable        e                       equal   0.01
+variable        mu                      equal   0.6
+
+# Setup the simulation, including specifying the grid layout for the
+# processors (32 procs per node on Garnet).
+
+units           si
+atom_style      sphere
+boundary        p p f
+newton          off
+
+atom_modify     map array sort 0 0
+
+#processors      8 16 1
+processors      8 16 1
+
+# Read the data for the initial particle positions and velocities.
+
+read_data       ${input_file_data}
+#read_restart    ${input_file_restart}
+
+# Setup neighbor list building.
+
+#neighbor        0.1e-3 bin
+neighbor        0.25e-3 bin 
+#neigh_modify    delay 0 every 5 check yes
+neigh_modify    delay 0 every 1 check yes
+communicate     single vel yes
+
+# The material properties and contact model for ice particles.  Particle type
+# 1 is the active, mobile particles.  The other particle types are for walls
+# and immobile particles.
+
+fix             E all property/global youngsModulus atomtype &
+                        ${E} ${E}
+fix             nu all property/global poissonsRatio atomtype &
+                        ${nu} ${nu}
+fix             e all property/global coefficientRestitution atomtypepair 2 &
+                        ${e} ${e} &
+                        ${e} ${e}
+fix             mu all property/global coefficientFriction atomtypepair 2 &
+                        ${mu} ${mu} &
+                        ${mu} ${mu}
+
+pair_style      gran model hertz tangential history
+pair_coeff      * *
+
+timestep        ${dt}
+
+group           active type 1
+group           inactive subtract all active
+neigh_modify    exclude group inactive inactive
+
+#BORRAR SIGUIENTE COMANDO
+#neigh_modify    exclude group active inactive
+
+# Gravity, time integration, and load balancing.
+
+#fix             gravity active gravity 9.8 vector 0 0 -1
+# this line integrates only active particles (for this reason vel=0 for inactive particles)
+fix             integrate active nve/sphere
+
+fix             wall_lo active wall/reflect zlo 0.25e-3 units box
+fix             wall_hi active wall/reflect zhi $((0.04-0.25e-3)) units box
+
+#fix             balance all balance 0 xyz 10 1.0
+
+# Coupling to the LES code.
+# If I want to give the information of particles type 2 into LES, I must change "active" to "all" (and change the LES script too):
+fix             les active les/couple restart_file ${output_file_restarts}
+
+# Information to put in the log file, including total energy, stress, average
+# coordination number, number of bonds, and the max z position to know when
+# the particles have fully settled.
+
+compute         tke all ke
+compute         rke all erotate/sphere
+variable        ke equal c_tke+c_rke
+
+compute         coord_atom active contact/atom
+compute         coord active reduce ave c_coord_atom
+
+compute         pgl all pair/gran/local local_id force
+compute         sga all stress/gran/atom compute pgl
+variable        sga_norm atom -(c_sga[1]+c_sga[5]+c_sga[9])
+compute         pe active reduce sum v_sga_norm
+
+compute         max_z all reduce max z
+
+#variable        x1 equal x[1]
+#variable        y1 equal y[1]
+#variable        z1 equal z[1]
+#variable        vx1 equal vx[1]
+#variable        vy1 equal vy[1]
+#variable        vz1 equal vz[1]
+#variable        fz1 equal fz[1]
+#variable        z2 equal z[2]
+#variable        vz2 equal vz[2]
+#variable        fz2 equal fz[2]
+#
+#fix             debug all print 100 &
+#"${current_time} ${x1} ${y1} ${z1} ${vx1} ${vy1} ${vz1}" &
+#                file p1.dat
+
+#thermo_style    custom step v_current_time v_z1 v_vz1 v_fz1 v_z2 v_vz2 v_fz2
+thermo_style    custom step v_current_time spcpu v_ke c_pe c_coord c_max_z
+thermo          ${thermo_timesteps}
+thermo_modify   lost error flush yes
+compute_modify  thermo_temp dynamic yes
+
+modify_timing   on
+
+# Information to put in the dump files, including positions, velocities, and
+# stresses for the particles.
+#
+# Most of my post-processing scripts that read dump files require a "columns"
+# parameter to know what kind of data exactly is in the binary dump file
+# format.  For these simulations, that columns parameter should be this:
+#
+# 'id type mass radius x y z vx vy vz fx fy fz omegax omegay omegaz c_sga[1] c_sga[2] c_sga[3] c_sga[4] c_sga[5] c_sga[6] c_sga[7] c_sga[8] c_sga[9]'
+
+#dump            dump active custom ${dump_timesteps} &
+#                        ${output_file_dumps} &
+#                        id type mass radius x y z vx vy vz &
+#                        fx fy fz omegax omegay omegaz &
+#                        c_sga[1] &
+#                        c_sga[2] &
+#                        c_sga[3] &
+#                        c_sga[4] &
+#                        c_sga[5] &
+#                        c_sga[6] &
+#                        c_sga[7] &
+#                        c_sga[8] &
+#                        c_sga[9]
+
+## Output restart files at the end of the simulation.
+#
+#restart         ${restart_timesteps} /scratch365/cgonza13/liggghts_output/restarts/restart.test.*
+#
+## Run the simulation.
+#
+#run             ${run_timesteps} upto
